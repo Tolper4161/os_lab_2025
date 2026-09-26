@@ -2,7 +2,7 @@
 
 void Swap(char *left, char *right)
 {
-	char variable = *left;
+	char symb = *left;
 	*left = *right;
-	*right = variable;
+	*right = symb;
 }
