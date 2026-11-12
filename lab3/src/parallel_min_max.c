@@ -40,24 +40,36 @@ int main(int argc, char **argv) {
         switch (option_index) {
           case 0:
             seed = atoi(optarg);
-            // your code here
-            // error handling
+
+            if (seed <= 0) {
+              printf("seed must be a natural number\n");
+              return 1;
+            }
+
             break;
           case 1:
             array_size = atoi(optarg);
-            // your code here
-            // error handling
+
+            if (array_size <= 0) {
+              printf("array_size must be a natural number\n");
+              return 1;
+            }
+
             break;
           case 2:
             pnum = atoi(optarg);
-            // your code here
-            // error handling
+            
+            if (pnum <= 0) {
+              printf("pnum must be a natural number\n");
+              return 1;
+            }
+            
             break;
           case 3:
             with_files = true;
             break;
 
-          defalut:
+          default:
             printf("Index %d is out of options\n", option_index);
         }
         break;
@@ -84,59 +96,195 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (pnum > array_size) {
+    printf("The number of pnum must not exceed the size of the array_size\n");
+    return 1;
+  }
+
+  if (array_size % pnum != 0) {
+    printf("The size of the array must be divided by the number of processes without remainder\n");
+    return 1;
+  }
+
   int *array = malloc(sizeof(int) * array_size);
+  if (array == NULL) {
+    perror("malloc");
+    return 1;
+  }
   GenerateArray(array, array_size, seed);
+
+  for (int i = 0; i < array_size; i++) {
+    printf("%d ", array[i]);
+  }
+  printf("\n");
+
   int active_child_processes = 0;
 
   struct timeval start_time;
   gettimeofday(&start_time, NULL);
 
-  for (int i = 0; i < pnum; i++) {
-    pid_t child_pid = fork();
-    if (child_pid >= 0) {
-      // successful fork
-      active_child_processes += 1;
-      if (child_pid == 0) {
-        // child process
+  int (*pipes)[2] = NULL;
 
-        // parallel somehow
+  if (!with_files) {
+    pipes = malloc(sizeof(int[2]) * pnum);
 
-        if (with_files) {
-          // use files here
-        } else {
-          // use pipe here
-        }
-        return 0;
-      }
-
-    } else {
-      printf("Fork failed!\n");
+    if (pipes == NULL) {
+      perror("malloc");
       return 1;
     }
+
+    for (int i = 0; i < pnum; i++) {
+      if (pipe(pipes[i]) == -1) {
+        perror("pipe");
+        return 1;
+      }
+    }
   }
-
-  while (active_child_processes > 0) {
-    // your code here
-
-    active_child_processes -= 1;
-  }
-
-  struct MinMax min_max;
-  min_max.min = INT_MAX;
-  min_max.max = INT_MIN;
 
   for (int i = 0; i < pnum; i++) {
-    int min = INT_MAX;
-    int max = INT_MIN;
+    pid_t child_pid = fork();
 
-    if (with_files) {
-      // read from files
-    } else {
-      // read from pipes
+    if (child_pid == -1) {
+      perror("fork");
+      return 1;
     }
 
-    if (min < min_max.min) min_max.min = min;
-    if (max > min_max.max) min_max.max = max;
+    if (child_pid == 0) {
+      // Дочерний процесс
+
+      if (!with_files) {
+        for (int j = 0; j < pnum; j++) {
+          close(pipes[j][0]);
+
+          if (j != i) {
+            close(pipes[j][1]);
+          }
+        }
+      }
+
+      unsigned int begin = array_size / pnum * i;
+      unsigned int end = array_size / pnum * (i + 1);
+
+      struct MinMax local_min_max = GetMinMax(array, begin, end);
+
+      if (with_files) {
+        char filename[64];
+        snprintf(filename, sizeof(filename), "result_%d.bin", i);
+
+        FILE *file = fopen(filename, "wb");
+        if (file == NULL) {
+          perror("fopen");
+          exit(1);
+        }
+
+        size_t written = fwrite(
+          &local_min_max,
+          sizeof(struct MinMax),
+          1,
+          file
+        );
+
+        if (written != 1) {
+          perror("fwrite");
+          fclose(file);
+          exit(1);
+        }
+
+        fclose(file);
+      }
+      else {
+        ssize_t bytes_written = write(
+          pipes[i][1],
+          &local_min_max,
+          sizeof(struct MinMax)
+        );
+
+        if (bytes_written != sizeof(struct MinMax)) {
+          perror("write");
+          exit(1);
+        }
+
+        close(pipes[i][1]);
+      }
+
+      exit(0);
+    }
+
+    // Этот участок выполняется только родителем
+    active_child_processes++;
+  }
+
+  // Закрытие всех дочерних процессов
+  if (!with_files) {
+    for (int i = 0; i < pnum; i++) {
+      close(pipes[i][1]);
+    }
+  }
+
+  struct MinMax global_min_max;
+  global_min_max.min = INT_MAX;
+  global_min_max.max = INT_MIN;
+
+  for (int i = 0; i < pnum; i++) {
+    struct MinMax local_min_max;
+
+    if (with_files) {
+      char filename[64];
+      snprintf(filename, sizeof(filename), "result_%d.bin", i);
+
+      FILE *file = fopen(filename, "rb");
+      if (file == NULL) {
+        perror("fopen");
+        return 1;
+      }
+
+      size_t bytes_read = fread(
+        &local_min_max,
+        sizeof(struct MinMax),
+        1,
+        file
+      );
+
+      if (bytes_read != 1) {
+        fprintf(stderr, "Failed to read result from %s\n", filename);
+        fclose(file);
+        return 1;
+      }
+
+      fclose(file);
+    }
+    else {
+      ssize_t bytes_read = read(
+        pipes[i][0],
+        &local_min_max,
+        sizeof(struct MinMax)
+      );
+
+      if (bytes_read != sizeof(struct MinMax)) {
+        perror("read");
+        return 1;
+      }
+
+      close(pipes[i][0]);
+    }
+
+    if (local_min_max.min < global_min_max.min)
+      global_min_max.min = local_min_max.min;
+    if (local_min_max.max > global_min_max.max)
+      global_min_max.max = local_min_max.max;
+  }
+
+  if (with_files) {
+    while (active_child_processes > 0) {
+      pid_t finished_pid = wait(NULL);
+
+      if (finished_pid > 0) {
+          active_child_processes--;
+      } else {
+          perror("wait");
+          return 1;
+      }
+    }
   }
 
   struct timeval finish_time;
@@ -146,9 +294,10 @@ int main(int argc, char **argv) {
   elapsed_time += (finish_time.tv_usec - start_time.tv_usec) / 1000.0;
 
   free(array);
+  free(pipes);
 
-  printf("Min: %d\n", min_max.min);
-  printf("Max: %d\n", min_max.max);
+  printf("Min: %d\n", global_min_max.min);
+  printf("Max: %d\n", global_min_max.max);
   printf("Elapsed time: %fms\n", elapsed_time);
   fflush(NULL);
   return 0;
