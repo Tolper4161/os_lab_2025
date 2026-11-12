@@ -221,6 +221,19 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (with_files) {
+    while (active_child_processes > 0) {
+      pid_t finished_pid = wait(NULL);
+
+      if (finished_pid > 0) {
+          active_child_processes--;
+      } else {
+          perror("wait");
+          return 1;
+      }
+    }
+  }
+
   struct MinMax global_min_max;
   global_min_max.min = INT_MAX;
   global_min_max.max = INT_MIN;
@@ -272,19 +285,6 @@ int main(int argc, char **argv) {
       global_min_max.min = local_min_max.min;
     if (local_min_max.max > global_min_max.max)
       global_min_max.max = local_min_max.max;
-  }
-
-  if (with_files) {
-    while (active_child_processes > 0) {
-      pid_t finished_pid = wait(NULL);
-
-      if (finished_pid > 0) {
-          active_child_processes--;
-      } else {
-          perror("wait");
-          return 1;
-      }
-    }
   }
 
   struct timeval finish_time;
